@@ -1,11 +1,10 @@
 import sensor
 import time
 import ml
-
 # --- 初始化摄像头 ---
 sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
-sensor.set_framesize(sensor.QVGA)
+sensor.set_framesize(sensor.QVGA) # 恢复为QVGA分辨率
 sensor.skip_frames(time=2000)
 sensor.set_vflip(True)
 sensor.set_hmirror(True)
@@ -16,7 +15,8 @@ norm = ml.Normalization(scale=(0, 1.0))
 print("成功加载TFLite模型。")
 
 # --- 红色十字检测的阈值 ---
-red_threshold = (30, 100, 15, 127, 15, 127)
+# 调整红色范围，使其更容易被检测到
+red_threshold = (0, 100, 20, 127, 0, 127)
 
 clock = time.clock()
 last_print_time = 0
@@ -40,7 +40,7 @@ while True:
     if current_state == STATE_LEARNING:
         # 步骤 1: 在屏幕中央寻找数字进行学习
         img_w, img_h = img.width(), img.height()
-        learn_roi_rect = (img_w // 2 - 50, img_h // 2 - 30, 100, 100)
+        learn_roi_rect = (img_w // 2 - 50, img_h // 2 - 30, 100, 100) # 恢复学习ROI尺寸和偏移量
         img.draw_rectangle(learn_roi_rect, color=(255, 255, 0)) # 黄色学习框
 
         # 从ROI中提取图像并进行处理
@@ -69,24 +69,27 @@ while True:
 
     elif current_state == STATE_DETECTING:
         # 步骤 1: 寻找红色十字
-        blobs = img.find_blobs([red_threshold], pixels_threshold=300, area_threshold=300, merge=True)
+        # 降低像素和面积阈值，使其更容易被检测到
+        blobs = img.find_blobs([red_threshold], pixels_threshold=200, area_threshold=200, merge=True)
         if not blobs:
-            print(clock.fps(), "fps") # 在没有找到十字时也打印FPS
             continue # 没有找到十字，继续下一帧
 
         cross_blob = max(blobs, key=lambda b: b.area())
         img.draw_cross(cross_blob.cx(), cross_blob.cy(), color=(0, 0, 0), size=10)
 
         if target_number is None:
-            print(clock.fps(), "fps") # 在没有目标数字时也打印FPS
             continue # 没有目标数字，继续下一帧
 
         # 步骤 2: 在十字周围识别目标数字
-        # 定义相对于十字中心的ROI
+        # 定义相对于十字中心的ROI - 调整间距
         roi_definitions = {
-            "left_num": (cross_blob.cx() - 65, cross_blob.cy() + 5, 60, 60),
-            "right_num": (cross_blob.cx() + 5, cross_blob.cy() + 5, 60, 60)
+            "left_num": (cross_blob.cx() - 80, cross_blob.cy() + 10, 70, 70), # 左侧，恢复间距和尺寸
+            "right_num": (cross_blob.cx() + 10, cross_blob.cy() + 10, 70, 70) # 右侧，恢复间距和尺寸
         }
+
+        # 绘制ROI框 (黑色)
+        for r_name, r_rect in roi_definitions.items():
+            img.draw_rectangle(r_rect, color=(0, 0, 0)) # 黑色框标记ROI
 
         for r_name, r_rect in roi_definitions.items():
             # 从ROI中提取图像并进行处理
@@ -95,7 +98,8 @@ while True:
             
             input_data = [norm(processed_img)]
             result = model.predict(input_data)[0].flatten().tolist()
-            predicted_number = result.index(max(result))
+            confidence = max(result) # 获取当前识别的置信度
+            predicted_number = result.index(confidence)
 
             # 步骤 3: 核心逻辑: 只在我给定的数字匹配时才响应
             if predicted_number == target_number:
@@ -105,5 +109,3 @@ while True:
                 if time.ticks_diff(time.ticks_ms(), last_print_time) > 1000:
                     last_print_time = time.ticks_ms()
                     print("在 %s 区域找到目标数字: %d" % (r_name, predicted_number))
-
-    print(clock.fps(), "fps")
