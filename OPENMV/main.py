@@ -6,9 +6,6 @@ sensor.reset()
 sensor.set_pixformat(sensor.RGB565)
 sensor.set_framesize(sensor.QVGA) # 恢复为QVGA分辨率
 sensor.skip_frames(time=2000)
-sensor.set_vflip(True)
-sensor.set_hmirror(True)
-
 # --- 加载数字识别模型 ---
 model = ml.Model("trained.tflite", load_to_fb=True)
 norm = ml.Normalization(scale=(0, 1.0))
@@ -77,14 +74,27 @@ while True:
         cross_blob = max(blobs, key=lambda b: b.area())
         img.draw_cross(cross_blob.cx(), cross_blob.cy(), color=(0, 0, 0), size=10)
 
+        # --- 新增边界检查 ---
+        img_w, img_h = img.width(), img.height()
+        # 检查十字是否足够远离边缘，以容纳左右两个70x70的ROI
+        # 左侧ROI的x起始点为 cx - 80，右侧ROI的x结束点为 cx + 10 + 70 = cx + 80
+        # 两个ROI的y结束点为 cy + 10 + 70 = cy + 80
+        if (cross_blob.cx() < 80 or
+            cross_blob.cx() + 80 > img_w or
+            cross_blob.cy() + 80 > img_h):
+            # 如果十字太靠近边缘，无法安全定义ROI，则跳过当前帧的数字识别
+            print("警告: 红色十字太靠近图像边缘，跳过数字识别。")
+            continue
+        # --- 边界检查结束 ---
+
         if target_number is None:
             continue # 没有目标数字，继续下一帧
 
         # 步骤 2: 在十字周围识别目标数字
         # 定义相对于十字中心的ROI - 调整间距
         roi_definitions = {
-            "left_num": (cross_blob.cx() - 80, cross_blob.cy() + 10, 70, 70), # 左侧，恢复间距和尺寸
-            "right_num": (cross_blob.cx() + 10, cross_blob.cy() + 10, 70, 70) # 右侧，恢复间距和尺寸
+            "left_num": (cross_blob.cx() - 75, cross_blob.cy() + 10, 70, 70), # 左侧，调整间距和尺寸
+            "right_num": (cross_blob.cx() + 5, cross_blob.cy() + 10, 70, 70) # 右侧，调整间距和尺寸
         }
 
         # 绘制ROI框 (黑色)
@@ -94,18 +104,21 @@ while True:
         for r_name, r_rect in roi_definitions.items():
             # 从ROI中提取图像并进行处理
             roi_img = img.copy(roi=r_rect)
-            processed_img = roi_img.binary([(0, 60)]).dilate(2)
+            processed_img = roi_img.binary([(0, 60)]) # 恢复为原始二值化方法
             
             input_data = [norm(processed_img)]
             result = model.predict(input_data)[0].flatten().tolist()
             confidence = max(result) # 获取当前识别的置信度
             predicted_number = result.index(confidence)
 
-            # 步骤 3: 核心逻辑: 只在我给定的数字匹配时才响应
-            if predicted_number == target_number:
+            # 步骤 3: 核心逻辑: 只在我给定的数字匹配且置信度足够高时才响应
+            if predicted_number == target_number and confidence > 0.7: # 新增置信度阈值
                 img.draw_rectangle(r_rect, color=(0, 255, 0)) # 绿色框标记ROI
                 img.draw_string(r_rect[0], r_rect[1] - 15, str(predicted_number), color=(0, 255, 0), scale=2)
                 
                 if time.ticks_diff(time.ticks_ms(), last_print_time) > 1000:
                     last_print_time = time.ticks_ms()
-                    print("在 %s 区域找到目标数字: %d" % (r_name, predicted_number))
+                    print("在 %s 区域找到目标数字: %d (置信度: %.2f)" % (r_name, predicted_number, confidence)) # 打印置信度
+            else:
+                # 如果不匹配或置信度不够，绘制红色框以示未识别
+                img.draw_rectangle(r_rect, color=(255, 0, 0)) # 红色框标记未识别
